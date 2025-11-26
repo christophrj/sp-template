@@ -1,0 +1,9 @@
+apiVersion: services.openmcp.cloud/v1alpha1
+kind: FooService
+metadata:
+  labels:
+    app.kubernetes.io/name: sp-template
+    app.kubernetes.io/managed-by: kustomize
+  name: fooservice-sample
+spec:
+  # TODO(user): Add fields here
