@@ -1,0 +1,9 @@
+apiVersion: domain.openmcp.cloud/v1alpha1
+kind: Foo
+metadata:
+  labels:
+    app.kubernetes.io/name: foo-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: foo-sample
+spec:
+  # TODO(user): Add fields here

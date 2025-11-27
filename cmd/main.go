@@ -17,39 +17,69 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
-	_ "k8s.io/client-go/plugin/pkg/client/auth"
-
+	"github.com/openmcp-project/controller-utils/pkg/clusters"
+	crdutil "github.com/openmcp-project/controller-utils/pkg/crds"
+	"github.com/openmcp-project/controller-utils/pkg/logging"
+	clustersv1alpha1 "github.com/openmcp-project/openmcp-operator/api/clusters/v1alpha1"
+	"github.com/openmcp-project/openmcp-operator/api/common"
+	openmcpconst "github.com/openmcp-project/openmcp-operator/api/constants"
+	"github.com/openmcp-project/openmcp-operator/lib/clusteraccess"
+	"github.com/openmcp-project/service-provider-template/api/crds"
+	servicesv1alpha1 "github.com/openmcp-project/service-provider-template/api/v1alpha1"
+	"github.com/openmcp-project/service-provider-template/internal/controller"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apiextensionv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
-
-	servicesv1alpha1 "github.com/openmcp-project/service-provider-template/api/v1alpha1"
-	"github.com/openmcp-project/service-provider-template/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
 var (
-	scheme   = runtime.NewScheme()
-	setupLog = ctrl.Log.WithName("setup")
+	platformScheme   = runtime.NewScheme()
+	onboardingScheme = runtime.NewScheme()
+	mcpScheme        = runtime.NewScheme()
+	setupLog         = ctrl.Log.WithName("setup")
 )
 
 func init() {
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-
-	utilruntime.Must(servicesv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
+	initPlatformScheme()
+	initOnboardingScheme()
+	initMcpScheme()
+}
+
+func initPlatformScheme() {
+	utilruntime.Must(clientgoscheme.AddToScheme(platformScheme))
+	utilruntime.Must(apiextensionv1.AddToScheme(platformScheme))
+	utilruntime.Must(servicesv1alpha1.AddToScheme(platformScheme))
+	utilruntime.Must(clustersv1alpha1.AddToScheme(platformScheme))
+}
+
+func initOnboardingScheme() {
+	utilruntime.Must(clientgoscheme.AddToScheme(onboardingScheme))
+	utilruntime.Must(apiextensionv1.AddToScheme(onboardingScheme))
+	utilruntime.Must(servicesv1alpha1.AddToScheme(onboardingScheme))
+}
+
+func initMcpScheme() {
+	utilruntime.Must(clientgoscheme.AddToScheme(mcpScheme))
+	utilruntime.Must(apiextensionv1.AddToScheme(mcpScheme))
 }
 
 // nolint:gocyclo
@@ -154,8 +184,58 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
+	// start sp specifics
+	log, err := logging.GetLogger()
+	if err != nil {
+		setupLog.Error(err, "Failed to get logger")
+		os.Exit(1)
+	}
+	ctrl.SetLogger(log.Logr())
+	platformCluster, err := initializePlatformCluster()
+	if err != nil {
+		setupLog.Error(err, "Failed to initialize platform cluster")
+		os.Exit(1)
+	}
+
+	// install crds
+	clusterAccessManager := clusteraccess.NewClusterAccessManager(platformCluster.Client(),
+		"fooservice.services.openmcp.cloud", os.Getenv("POD_NAMESPACE"))
+	clusterAccessManager.WithLogger(&log).
+		WithInterval(10 * time.Second).
+		WithTimeout(30 * time.Minute)
+	ctx := context.Background()
+	adminPermissions := []clustersv1alpha1.PermissionsRequest{
+		{
+
+			Rules: []rbacv1.PolicyRule{
+				{
+					APIGroups: []string{"*"},
+					Resources: []string{"*"},
+					Verbs:     []string{"*"},
+				},
+			},
+		},
+	}
+	onboardingCluster, err := clusterAccessManager.CreateAndWaitForCluster(ctx, "onboarding-init",
+		clustersv1alpha1.PURPOSE_ONBOARDING, onboardingScheme, adminPermissions)
+
+	if err != nil {
+		setupLog.Error(err, "Failed to create and wait for onboarding cluster")
+	}
+
+	crdManager := crdutil.NewCRDManager(openmcpconst.ClusterLabel, crds.CRDs)
+
+	crdManager.AddCRDLabelToClusterMapping(clustersv1alpha1.PURPOSE_PLATFORM, platformCluster)
+	crdManager.AddCRDLabelToClusterMapping(clustersv1alpha1.PURPOSE_ONBOARDING, onboardingCluster)
+
+	if err := crdManager.CreateOrUpdateCRDs(ctx, &log); err != nil {
+		setupLog.Error(err, "Failed to create or update CRDs")
+	}
+
+	// end sp specifics
+
+	mgr, err := ctrl.NewManager(onboardingCluster.RESTConfig(), ctrl.Options{
+		Scheme:                 onboardingScheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
@@ -179,6 +259,17 @@ func main() {
 	}
 
 	if err := (&controller.FooServiceReconciler{
+		PlatformCluster: platformCluster,
+		ClusterAccessReconciler: clusteraccess.NewClusterAccessReconciler(platformCluster.Client(), "fooservice").
+			WithMCPScheme(mcpScheme).
+			WithRetryInterval(10 * time.Second).
+			WithMCPPermissions(adminPermissions).WithMCPRoleRefs([]common.RoleRef{
+			{
+				Name: "cluster-admin",
+				Kind: "ClusterRole",
+			},
+		}).
+			SkipWorkloadCluster(),
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
@@ -201,4 +292,17 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+// initializePlatformCluster initializes the platform cluster with the necessary REST config and client.
+func initializePlatformCluster() (*clusters.Cluster, error) {
+	platformCluster := clusters.New("platform")
+
+	platformCluster = platformCluster.WithRESTConfig(ctrl.GetConfigOrDie())
+
+	if err := platformCluster.InitializeClient(platformScheme); err != nil {
+		setupLog.Error(err, "Failed to initialize client for platform cluster")
+		return nil, err
+	}
+	return platformCluster, nil
 }

@@ -60,7 +60,7 @@ type FooServiceStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-
+// +kubebuilder:metadata:labels="openmcp.cloud/cluster=onboarding"
 // FooService is the Schema for the fooservices API
 type FooService struct {
 	metav1.TypeMeta `json:",inline"`
