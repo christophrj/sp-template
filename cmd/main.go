@@ -196,14 +196,7 @@ func main() {
 		setupLog.Error(err, "Failed to initialize platform cluster")
 		os.Exit(1)
 	}
-
-	// install crds
-	clusterAccessManager := clusteraccess.NewClusterAccessManager(platformCluster.Client(),
-		"fooservice.services.openmcp.cloud", os.Getenv("POD_NAMESPACE"))
-	clusterAccessManager.WithLogger(&log).
-		WithInterval(10 * time.Second).
-		WithTimeout(30 * time.Minute)
-	ctx := context.Background()
+	// TODO: define minimum set of permission required to run the init and run part of your service provider
 	adminPermissions := []clustersv1alpha1.PermissionsRequest{
 		{
 
@@ -216,22 +209,37 @@ func main() {
 			},
 		},
 	}
-	onboardingCluster, err := clusterAccessManager.CreateAndWaitForCluster(ctx, "onboarding-init",
+	clusterAccessManager := clusteraccess.NewClusterAccessManager(platformCluster.Client(),
+		"fooservice.services.openmcp.cloud", os.Getenv("POD_NAMESPACE"))
+	clusterAccessManager.WithLogger(&log).
+		WithInterval(10 * time.Second).
+		WithTimeout(30 * time.Minute)
+	ctx := context.Background()
+	// init (job that installs CRDs)
+	if os.Args[1] == "init" {
+		onboardingCluster, err := clusterAccessManager.CreateAndWaitForCluster(ctx, "onboarding-init",
+			clustersv1alpha1.PURPOSE_ONBOARDING, onboardingScheme, adminPermissions)
+
+		if err != nil {
+			setupLog.Error(err, "Failed to create and wait for onboarding cluster access")
+		}
+
+		crdManager := crdutil.NewCRDManager(openmcpconst.ClusterLabel, crds.CRDs)
+
+		crdManager.AddCRDLabelToClusterMapping(clustersv1alpha1.PURPOSE_PLATFORM, platformCluster)
+		crdManager.AddCRDLabelToClusterMapping(clustersv1alpha1.PURPOSE_ONBOARDING, onboardingCluster)
+
+		if err := crdManager.CreateOrUpdateCRDs(ctx, &log); err != nil {
+			setupLog.Error(err, "Failed to create or update CRDs")
+		}
+		return
+	}
+	// run (sp controller deployment)
+	onboardingCluster, err := clusterAccessManager.CreateAndWaitForCluster(ctx, "onboarding-run",
 		clustersv1alpha1.PURPOSE_ONBOARDING, onboardingScheme, adminPermissions)
-
 	if err != nil {
-		setupLog.Error(err, "Failed to create and wait for onboarding cluster")
+		setupLog.Error(err, "Failed to create and wait for onboarding cluster access")
 	}
-
-	crdManager := crdutil.NewCRDManager(openmcpconst.ClusterLabel, crds.CRDs)
-
-	crdManager.AddCRDLabelToClusterMapping(clustersv1alpha1.PURPOSE_PLATFORM, platformCluster)
-	crdManager.AddCRDLabelToClusterMapping(clustersv1alpha1.PURPOSE_ONBOARDING, onboardingCluster)
-
-	if err := crdManager.CreateOrUpdateCRDs(ctx, &log); err != nil {
-		setupLog.Error(err, "Failed to create or update CRDs")
-	}
-
 	// end sp specifics
 
 	mgr, err := ctrl.NewManager(onboardingCluster.RESTConfig(), ctrl.Options{
