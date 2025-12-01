@@ -41,12 +41,16 @@ import (
 
 	"github.com/openmcp-project/controller-utils/pkg/clusters"
 	"github.com/openmcp-project/openmcp-operator/lib/clusteraccess"
-	servicesv1alpha1 "github.com/openmcp-project/service-provider-template/api/v1alpha1"
+	apiv1alpha1 "github.com/openmcp-project/service-provider-template/api/v1alpha1"
 )
 
 const (
-	ownerNameLabel      = "foo-operator/owner-name"
-	ownerNamespaceLabel = "foo-operator/owner-namespace"
+	ownerNameLabel      = "foo-service/owner-name"
+	ownerNamespaceLabel = "foo-service/owner-namespace"
+)
+
+var (
+	finalizer = apiv1alpha1.GroupVersion.Group + "/finalizer"
 )
 
 // FooServiceReconciler reconciles a FooService object
@@ -74,47 +78,93 @@ type FooServiceReconciler struct {
 func (r *FooServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	l := logf.FromContext(ctx)
 	l.Info("reconcile...")
-	// if _, err := r.ClusterAccessReconciler.Reconcile(ctx, req); err != nil {
-	// 	return ctrl.Result{}, err
-	// }
-	// _, err := r.ClusterAccessReconciler.MCPCluster(ctx, req)
-	// if err != nil {
-	// 	return ctrl.Result{}, err
-	// }
-	var svcObj servicesv1alpha1.FooService
+	// core logic
+	var svcObj apiv1alpha1.FooService
 	if err := r.Get(ctx, req.NamespacedName, &svcObj); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	deleted := !svcObj.DeletionTimestamp.IsZero()
-	if !deleted {
-		controllerutil.AddFinalizer(&svcObj, "foo")
-		if err := r.Update(ctx, &svcObj); err != nil {
-			return ctrl.Result{}, err
-		}
+	var mcp client.Client
+	res, err := r.mcpClient(ctx, req, &mcp)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
-	// in a non-dummy loop, this should be handled more efficiently instead of rendering on every reconcile
+	// mcp access not ready
+	if mcp == nil {
+		return res, nil
+	}
+	// check annotations to e.g. end reconcile
+	// end check annotations
+	if svcObj.DeletionTimestamp.IsZero() {
+		return r.createOrUpdate(ctx, svcObj, mcp)
+	}
+	res, err = r.delete(ctx, svcObj, mcp)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	return res, nil
+}
+
+func (r *FooServiceReconciler) delete(ctx context.Context, obj apiv1alpha1.FooService, mcp client.Client) (ctrl.Result, error) {
+	l := logf.FromContext(ctx)
+	// render managed objs
+	objs, err := renderKustomize()
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	// remove managed objs
+	for _, obj := range objs {
+		if err := mcp.Delete(ctx, obj); err != nil {
+			l.Error(err, "delete failed")
+		}
+		continue
+	}
+	// remove mcp access
+	res, err := r.ClusterAccessReconciler.ReconcileDelete(ctx, reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Namespace: obj.Namespace,
+			Name:      obj.Name,
+		},
+	})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	// make sure to not drop the object before cleanup has been done
+	if res.RequeueAfter > 0 {
+		return res, err
+	}
+	// remove finalizer
+	controllerutil.RemoveFinalizer(&obj, finalizer)
+	if err := r.Update(ctx, &obj); err != nil {
+		return ctrl.Result{}, err
+	}
+	l.Info("delete successful")
+	return ctrl.Result{}, nil
+}
+
+func (r *FooServiceReconciler) createOrUpdate(ctx context.Context, svcobj apiv1alpha1.FooService, mcp client.Client) (ctrl.Result, error) {
+	l := logf.FromContext(ctx)
+	// add finalizer
+	controllerutil.AddFinalizer(&svcobj, finalizer)
+	if err := r.Update(ctx, &svcobj); err != nil {
+		return ctrl.Result{}, err
+	}
+	// render managed objs
 	objs, err := renderKustomize()
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	for _, obj := range objs {
-		if deleted {
-			if err := r.Delete(ctx, obj); err != nil {
-				l.Error(err, "delete failed")
-			}
-			continue
-		}
 		// set ownership labels
 		labels := map[string]string{}
-		labels[ownerNameLabel] = req.Name
-		labels[ownerNamespaceLabel] = req.Namespace
+		labels[ownerNameLabel] = svcobj.Name
+		labels[ownerNamespaceLabel] = svcobj.Namespace
 		obj.SetLabels(labels)
 		// prepare createOrUpdate
 		current := &unstructured.Unstructured{}
 		current.SetGroupVersionKind(obj.GroupVersionKind())
 		current.SetName(obj.GetName())
 		current.SetNamespace(obj.GetNamespace())
-		_, err = controllerutil.CreateOrUpdate(ctx, r.Client, current, func() error {
+		_, err = controllerutil.CreateOrUpdate(ctx, mcp, current, func() error {
 			ignore := map[string]bool{
 				"status":   true,
 				"metadata": true,
@@ -132,20 +182,32 @@ func (r *FooServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			return ctrl.Result{}, err
 		}
 	}
-	if deleted {
-		controllerutil.RemoveFinalizer(&svcObj, "foo")
-		if err := r.Update(ctx, &svcObj); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
+	l.Info("createOrUpdate successful")
 	return ctrl.Result{}, nil
+}
+
+func (r *FooServiceReconciler) mcpClient(ctx context.Context, req ctrl.Request, mcpClient *client.Client) (ctrl.Result, error) {
+	res, err := r.ClusterAccessReconciler.Reconcile(ctx, req)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if res.RequeueAfter > 0 {
+		return res, nil
+	}
+	mcpCluster, err := r.ClusterAccessReconciler.MCPCluster(ctx, req)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	*mcpClient = mcpCluster.Client()
+	return reconcile.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *FooServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&servicesv1alpha1.FooService{}).
+		For(&apiv1alpha1.FooService{}).
 		// sample watch to prevent drift on operator deployment
+		// TODO 'move' to mcp since deployment is not provisioned on the onboarding cluster
 		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(ownershipFilter()),
 			builder.WithPredicates(predicate.ResourceVersionChangedPredicate{})).
 		Named("fooservice").
