@@ -32,9 +32,8 @@ import (
 	"github.com/openmcp-project/openmcp-operator/api/common"
 	openmcpconst "github.com/openmcp-project/openmcp-operator/api/constants"
 	"github.com/openmcp-project/openmcp-operator/lib/clusteraccess"
+
 	"github.com/openmcp-project/service-provider-template/api/crds"
-	servicesv1alpha1 "github.com/openmcp-project/service-provider-template/api/v1alpha1"
-	"github.com/openmcp-project/service-provider-template/internal/controller"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -47,6 +46,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	fooservicesv1alpha1 "github.com/openmcp-project/service-provider-template/api/v1alpha1"
+	"github.com/openmcp-project/service-provider-template/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -67,14 +69,14 @@ func init() {
 func initPlatformScheme() {
 	utilruntime.Must(clientgoscheme.AddToScheme(platformScheme))
 	utilruntime.Must(apiextensionv1.AddToScheme(platformScheme))
-	utilruntime.Must(servicesv1alpha1.AddToScheme(platformScheme))
+	utilruntime.Must(fooservicesv1alpha1.AddToScheme(platformScheme))
 	utilruntime.Must(clustersv1alpha1.AddToScheme(platformScheme))
 }
 
 func initOnboardingScheme() {
 	utilruntime.Must(clientgoscheme.AddToScheme(onboardingScheme))
 	utilruntime.Must(apiextensionv1.AddToScheme(onboardingScheme))
-	utilruntime.Must(servicesv1alpha1.AddToScheme(onboardingScheme))
+	utilruntime.Must(fooservicesv1alpha1.AddToScheme(onboardingScheme))
 }
 
 func initMcpScheme() {
@@ -210,7 +212,7 @@ func main() {
 		},
 	}
 	clusterAccessManager := clusteraccess.NewClusterAccessManager(platformCluster.Client(),
-		"fooservice.services.openmcp.cloud", os.Getenv("POD_NAMESPACE"))
+		"fooservice.foo.services.openmcp.cloud", os.Getenv("POD_NAMESPACE"))
 	clusterAccessManager.WithLogger(&log).
 		WithInterval(10 * time.Second).
 		WithTimeout(30 * time.Minute)
@@ -282,6 +284,13 @@ func main() {
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FooService")
+		os.Exit(1)
+	}
+	if err := (&controller.ProviderConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ProviderConfig")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

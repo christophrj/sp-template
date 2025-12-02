@@ -14,8 +14,17 @@ resources:
     namespaced: true
   controller: true
   domain: openmcp.cloud
-  group: services
+  group: foo.services
   kind: FooService
+  path: github.com/openmcp-project/service-provider-template/api/v1alpha1
+  version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: openmcp.cloud
+  group: foo.services
+  kind: ProviderConfig
   path: github.com/openmcp-project/service-provider-template/api/v1alpha1
   version: v1alpha1
 version: "3"

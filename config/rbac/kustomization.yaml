@@ -22,6 +22,9 @@ resources:
 # default, aiding admins in cluster management. Those roles are
 # not used by the sp-template itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
+- providerconfig_admin_role.yaml
+- providerconfig_editor_role.yaml
+- providerconfig_viewer_role.yaml
 - fooservice_admin_role.yaml
 - fooservice_editor_role.yaml
 - fooservice_viewer_role.yaml

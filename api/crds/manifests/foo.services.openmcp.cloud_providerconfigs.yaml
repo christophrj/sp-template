@@ -5,21 +5,21 @@ metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
   labels:
-    openmcp.cloud/cluster: onboarding
-  name: fooservices.services.openmcp.cloud
+    openmcp.cloud/cluster: platform
+  name: providerconfigs.foo.services.openmcp.cloud
 spec:
-  group: services.openmcp.cloud
+  group: foo.services.openmcp.cloud
   names:
-    kind: FooService
-    listKind: FooServiceList
-    plural: fooservices
-    singular: fooservice
-  scope: Namespaced
+    kind: ProviderConfig
+    listKind: ProviderConfigList
+    plural: providerconfigs
+    singular: providerconfig
+  scope: Cluster
   versions:
   - name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: FooService is the Schema for the fooservices API
+        description: ProviderConfig is the Schema for the providerconfigs API
         properties:
           apiVersion:
             description: |-
@@ -39,19 +39,19 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of FooService
+            description: spec defines the desired state of ProviderConfig
             properties:
               foo:
-                description: foo is an example field of FooService. Edit fooservice_types.go
+                description: foo is an example field of ProviderConfig. Edit providerconfig_types.go
                   to remove/update
                 type: string
             type: object
           status:
-            description: status defines the observed state of FooService
+            description: status defines the observed state of ProviderConfig
             properties:
               conditions:
                 description: |-
-                  conditions represent the current state of the FooService resource.
+                  conditions represent the current state of the ProviderConfig resource.
                   Each condition has a unique type and reflects the status of a specific aspect of the resource.
 
                   Standard condition types include:
