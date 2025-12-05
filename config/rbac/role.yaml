@@ -5,32 +5,6 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
-  - foo.services.openmcp.cloud
-  resources:
-  - providerconfigs
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - foo.services.openmcp.cloud
-  resources:
-  - providerconfigs/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - foo.services.openmcp.cloud
-  resources:
-  - providerconfigs/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
   - services.openmcp.cloud
   resources:
   - fooservices
