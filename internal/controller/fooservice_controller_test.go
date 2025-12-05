@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	servicesv1alpha1 "github.com/openmcp-project/service-provider-template/api/v1alpha1"
+	"github.com/openmcp-project/service-provider-template/pkg/runtime"
 )
 
 var _ = Describe("FooService Controller", func() {
@@ -68,7 +69,8 @@ var _ = Describe("FooService Controller", func() {
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
-			controllerReconciler := &FooServiceReconciler{
+			// TODO
+			controllerReconciler := &runtime.SPReconciler[*servicesv1alpha1.FooService, *servicesv1alpha1.ProviderConfig]{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}

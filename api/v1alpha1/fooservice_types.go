@@ -56,10 +56,16 @@ type FooServiceStatus struct {
 	// +listMapKey=type
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// ObservedGeneration is the generation of this resource that was last reconciled by the controller.
+	ObservedGeneration int64 `json:"observedGeneration"`
+	// Phase is the current phase of the resource.
+	Phase string `json:"phase"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:JSONPath=`.status.phase`,name="Phase",type=string
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:metadata:labels="openmcp.cloud/cluster=onboarding"
 // FooService is the Schema for the fooservices API
 type FooService struct {
@@ -89,4 +95,21 @@ type FooServiceList struct {
 
 func init() {
 	SchemeBuilder.Register(&FooService{}, &FooServiceList{})
+}
+
+func (o *FooService) Finalizer() string {
+	return GroupVersion.Group + "/finalizer"
+}
+
+func (o *FooService) GetStatus() any {
+	return o.Status
+}
+func (o *FooService) GetConditions() *[]metav1.Condition {
+	return &o.Status.Conditions
+}
+func (o *FooService) SetPhase(phase string) {
+	o.Status.Phase = phase
+}
+func (o *FooService) SetObservedGeneration(gen int64) {
+	o.Status.ObservedGeneration = gen
 }

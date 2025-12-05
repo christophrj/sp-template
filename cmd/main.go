@@ -34,13 +34,16 @@ import (
 	"github.com/openmcp-project/openmcp-operator/lib/clusteraccess"
 
 	"github.com/openmcp-project/service-provider-template/api/crds"
+	// spruntime "github.com/openmcp-project/service-provider-template/pkg/runtime"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
@@ -49,6 +52,7 @@ import (
 
 	fooservicesv1alpha1 "github.com/openmcp-project/service-provider-template/api/v1alpha1"
 	"github.com/openmcp-project/service-provider-template/internal/controller"
+	spruntime "github.com/openmcp-project/service-provider-template/pkg/runtime"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -268,6 +272,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	configUpdates := make(chan event.GenericEvent)
 	if err := (&controller.FooServiceReconciler{
 		PlatformCluster: platformCluster,
 		ClusterAccessReconciler: clusteraccess.NewClusterAccessReconciler(platformCluster.Client(), "fooservice").
@@ -282,18 +287,25 @@ func main() {
 			SkipWorkloadCluster(),
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, configUpdates); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FooService")
 		os.Exit(1)
 	}
-	if err := (&controller.ProviderConfigReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ProviderConfig")
-		os.Exit(1)
-	}
 	// +kubebuilder:scaffold:builder
+
+	// experimental provider config watch
+	// context: i always ran into problems with the manager being registered for the onboarding cluster which results
+	// in controller-runntime not being able to cache objects it
+	// use client-go sharedinformer instead of having either two managers or a separate binary for the config controller
+	gvr := schema.GroupVersionResource{
+		Group:    "foo.services.openmcp.cloud",
+		Version:  "v1alpha1",
+		Resource: "providerconfigs",
+	}
+	if err := spruntime.WatchProviderConfig(ctx, gvr, platformCluster, configUpdates); err != nil {
+		setupLog.Error(err, "unable to set up ProviderConfig watch")
+	}
+	// end experimental
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")

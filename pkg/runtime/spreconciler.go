@@ -1,0 +1,160 @@
+package runtime
+
+import (
+	"context"
+	"errors"
+	"sync/atomic"
+	"time"
+
+	"github.com/openmcp-project/controller-utils/pkg/clusters"
+	"github.com/openmcp-project/openmcp-operator/lib/clusteraccess"
+	"k8s.io/apimachinery/pkg/api/equality"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+type DomainServiceReconciler[T APIObject, PC ProviderConfig] interface {
+	CreateOrUpdate(ctx context.Context, obj T, pc PC, target *clusters.Cluster) (ctrl.Result, error)
+	Delete(ctx context.Context, obj T, pc PC, target *clusters.Cluster) (ctrl.Result, error)
+}
+
+type APIObject interface {
+	client.Object
+	APIObjectStatus
+	Finalizer() string
+}
+
+type APIObjectStatus interface {
+	GetStatus() any
+	GetConditions() *[]metav1.Condition
+	SetPhase(string)
+	SetObservedGeneration(int64)
+}
+
+type ProviderConfig interface {
+	client.Object
+	PollInterval() time.Duration
+}
+
+type SPReconciler[T APIObject, PC ProviderConfig] struct {
+	PlatformCluster         *clusters.Cluster
+	ClusterAccessReconciler clusteraccess.Reconciler
+	client.Client
+	Scheme                  *runtime.Scheme
+	DomainServiceReconciler DomainServiceReconciler[T, PC]
+	EmptyAPIObj             func() T
+	ConfigCache             atomic.Value
+}
+
+func (r *SPReconciler[T, PC]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	l := logf.FromContext(ctx)
+	// common reconciler logic including get obj, providerconfig, mcp/workload access
+	obj := r.EmptyAPIObj()
+	if err := r.Get(ctx, req.NamespacedName, obj); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	oldObj := obj.DeepCopyObject().(T)
+	providerConfig := r.ConfigCache.Load()
+	if providerConfig == nil {
+		StatusProgressing(obj, "ReconcileError", "No ProviderConfig found")
+		r.updateStatus(ctx, obj, oldObj)
+		return ctrl.Result{}, errors.New("provider config missing")
+	}
+	providerConfigCopy := providerConfig.(PC).DeepCopyObject().(PC)
+	// TODO workload cluster access
+	mcp, res, err := r.mcpCluster(ctx, req)
+	if err != nil {
+		l.Error(err, "cluster access error")
+		StatusProgressing(obj, "ReconcileError", "target cluster access error")
+		r.updateStatus(ctx, obj, oldObj)
+		return ctrl.Result{}, err
+	}
+	if mcp == nil {
+		StatusProgressing(obj, "Reconciling", "target cluster access is being set up")
+		r.updateStatus(ctx, obj, oldObj)
+		return res, nil
+	}
+	// core crud
+	deleted := !obj.GetDeletionTimestamp().IsZero()
+	if deleted {
+		res, err = r.delete(ctx, obj, providerConfigCopy, mcp)
+	} else {
+		res, err = r.createOrUpdate(ctx, obj, providerConfigCopy, mcp)
+		r.updateStatus(ctx, obj, oldObj)
+	}
+	// return based on result/err
+	if err != nil {
+		l.Error(err, "reconcile failed")
+		return ctrl.Result{}, err
+	}
+	if res.RequeueAfter > 0 {
+		return res, nil
+	}
+	// fallback to poll interval to prevent 'managed service' drift
+	return ctrl.Result{
+		RequeueAfter: providerConfigCopy.PollInterval(),
+	}, nil
+}
+
+func (r *SPReconciler[T, PC]) updateStatus(ctx context.Context, new T, old T) {
+	if equality.Semantic.DeepEqual(old.GetStatus(), new.GetStatus()) {
+		return
+	}
+	if err := r.Status().Patch(ctx, new, client.MergeFrom(old)); err != nil {
+		l := logf.FromContext(ctx)
+		l.Error(err, "Patch status failed")
+	}
+}
+
+func (r *SPReconciler[T, PC]) mcpCluster(ctx context.Context, req ctrl.Request) (*clusters.Cluster, ctrl.Result, error) {
+	res, err := r.ClusterAccessReconciler.Reconcile(ctx, req)
+	if err != nil {
+		return nil, ctrl.Result{}, err
+	}
+	if res.RequeueAfter > 0 {
+		return nil, res, nil
+	}
+	mcpCluster, err := r.ClusterAccessReconciler.MCPCluster(ctx, req)
+	if err != nil {
+		return nil, ctrl.Result{}, err
+	}
+	return mcpCluster, ctrl.Result{}, nil
+}
+
+func (r *SPReconciler[T, PC]) delete(ctx context.Context, obj T, providerConfig PC, mcp *clusters.Cluster) (ctrl.Result, error) {
+	oldObj := obj.DeepCopyObject().(T)
+	res, err := r.DomainServiceReconciler.Delete(ctx, obj, providerConfig, mcp)
+	r.updateStatus(ctx, obj, oldObj)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if res.RequeueAfter > 0 {
+		return res, nil
+	}
+	// remove mcp access
+	res, err = r.ClusterAccessReconciler.ReconcileDelete(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(obj)})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	// make sure to not drop the object before cleanup has been done
+	if res.RequeueAfter > 0 {
+		return res, nil
+	}
+	// remove finalizer
+	controllerutil.RemoveFinalizer(obj, obj.Finalizer())
+	if err := r.Update(ctx, obj); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+func (r *SPReconciler[T, PC]) createOrUpdate(ctx context.Context, obj T, provicerConfig PC, mcp *clusters.Cluster) (ctrl.Result, error) {
+	controllerutil.AddFinalizer(obj, obj.Finalizer())
+	if err := r.Update(ctx, obj); err != nil {
+		return ctrl.Result{}, err
+	}
+	return r.DomainServiceReconciler.CreateOrUpdate(ctx, obj, provicerConfig, mcp)
+}
