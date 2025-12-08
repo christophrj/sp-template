@@ -1,0 +1,49 @@
+package e2e
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	v1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/e2e-framework/klient/wait"
+	"sigs.k8s.io/e2e-framework/pkg/envconf"
+	"sigs.k8s.io/e2e-framework/pkg/features"
+
+	"github.com/openmcp-project/openmcp-testing/pkg/clusterutils"
+	"github.com/openmcp-project/openmcp-testing/pkg/conditions"
+	"github.com/openmcp-project/openmcp-testing/pkg/providers"
+	"github.com/openmcp-project/openmcp-testing/pkg/resources"
+)
+
+func TestServiceProvider(t *testing.T) {
+	basicProviderTest := features.New("provider test").
+		Setup(func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+			if _, err := resources.CreateObjectsFromDir(ctx, c, "platform"); err != nil {
+				t.Errorf("failed to create platform cluster objects: %v", err)
+			}
+			return ctx
+		}).
+		Setup(providers.CreateMCP("test-mcp", wait.WithTimeout(2*time.Minute))).
+		Assess("verify service can be successfully consumed",
+			func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+				onboardingConfig, err := clusterutils.OnboardingConfig()
+				if err != nil {
+					t.Error(err)
+					return ctx
+				}
+				objList, err := resources.CreateObjectsFromDir(ctx, onboardingConfig, "onboarding")
+				if err != nil {
+					t.Errorf("failed to create onboarding cluster objects: %v", err)
+					return ctx
+				}
+				for _, obj := range objList.Items {
+					wait.For(conditions.Match(&obj, onboardingConfig, "Ready", v1.ConditionTrue), wait.WithTimeout(time.Minute))
+				}
+				return ctx
+			},
+		).
+		Assess("verify domain objects can be created", providers.ImportDomainAPIs("mcp", wait.WithTimeout(time.Minute))).
+		Teardown(providers.DeleteMCP("test-mcp", wait.WithTimeout(time.Minute)))
+	testenv.Test(t, basicProviderTest.Feature())
+}
