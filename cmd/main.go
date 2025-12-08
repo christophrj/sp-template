@@ -275,7 +275,8 @@ func main() {
 	}
 	configUpdates := make(chan event.GenericEvent)
 	if err := (&controller.FooServiceReconciler{
-		PlatformCluster: platformCluster,
+		OnboardingCluster: onboardingCluster,
+		PlatformCluster:   platformCluster,
 		ClusterAccessReconciler: clusteraccess.NewClusterAccessReconciler(platformCluster.Client(), "fooservice").
 			WithMCPScheme(mcpScheme).
 			WithRetryInterval(10 * time.Second).
@@ -284,10 +285,7 @@ func main() {
 				Name: "cluster-admin",
 				Kind: "ClusterRole",
 			},
-		}).
-			SkipWorkloadCluster(),
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		}).SkipWorkloadCluster(),
 	}).SetupWithManager(mgr, configUpdates); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FooService")
 		os.Exit(1)

@@ -10,7 +10,6 @@ import (
 	"github.com/openmcp-project/openmcp-operator/lib/clusteraccess"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -42,9 +41,8 @@ type ProviderConfig interface {
 
 type SPReconciler[T APIObject, PC ProviderConfig] struct {
 	PlatformCluster         *clusters.Cluster
+	OnboardingCluster       *clusters.Cluster
 	ClusterAccessReconciler clusteraccess.Reconciler
-	client.Client
-	Scheme                  *runtime.Scheme
 	DomainServiceReconciler DomainServiceReconciler[T, PC]
 	EmptyAPIObj             func() T
 	ConfigCache             atomic.Value
@@ -54,7 +52,7 @@ func (r *SPReconciler[T, PC]) Reconcile(ctx context.Context, req ctrl.Request) (
 	l := logf.FromContext(ctx)
 	// common reconciler logic including get obj, providerconfig, mcp/workload access
 	obj := r.EmptyAPIObj()
-	if err := r.Get(ctx, req.NamespacedName, obj); err != nil {
+	if err := r.OnboardingCluster.Client().Get(ctx, req.NamespacedName, obj); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	oldObj := obj.DeepCopyObject().(T)
@@ -66,7 +64,7 @@ func (r *SPReconciler[T, PC]) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	providerConfigCopy := providerConfig.(PC).DeepCopyObject().(PC)
 	// TODO workload cluster access
-	mcp, res, err := r.mcpCluster(ctx, req)
+	mcp, res, err := r.mcp(ctx, req)
 	if err != nil {
 		l.Error(err, "cluster access error")
 		StatusProgressing(obj, "ReconcileError", "target cluster access error")
@@ -104,13 +102,13 @@ func (r *SPReconciler[T, PC]) updateStatus(ctx context.Context, new T, old T) {
 	if equality.Semantic.DeepEqual(old.GetStatus(), new.GetStatus()) {
 		return
 	}
-	if err := r.Status().Patch(ctx, new, client.MergeFrom(old)); err != nil {
+	if err := r.OnboardingCluster.Client().Status().Patch(ctx, new, client.MergeFrom(old)); err != nil {
 		l := logf.FromContext(ctx)
 		l.Error(err, "Patch status failed")
 	}
 }
 
-func (r *SPReconciler[T, PC]) mcpCluster(ctx context.Context, req ctrl.Request) (*clusters.Cluster, ctrl.Result, error) {
+func (r *SPReconciler[T, PC]) mcp(ctx context.Context, req ctrl.Request) (*clusters.Cluster, ctrl.Result, error) {
 	res, err := r.ClusterAccessReconciler.Reconcile(ctx, req)
 	if err != nil {
 		return nil, ctrl.Result{}, err
@@ -125,9 +123,9 @@ func (r *SPReconciler[T, PC]) mcpCluster(ctx context.Context, req ctrl.Request) 
 	return mcpCluster, ctrl.Result{}, nil
 }
 
-func (r *SPReconciler[T, PC]) delete(ctx context.Context, obj T, providerConfig PC, mcp *clusters.Cluster) (ctrl.Result, error) {
+func (r *SPReconciler[T, PC]) delete(ctx context.Context, obj T, pc PC, mcp *clusters.Cluster) (ctrl.Result, error) {
 	oldObj := obj.DeepCopyObject().(T)
-	res, err := r.DomainServiceReconciler.Delete(ctx, obj, providerConfig, mcp)
+	res, err := r.DomainServiceReconciler.Delete(ctx, obj, pc, mcp)
 	r.updateStatus(ctx, obj, oldObj)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -136,7 +134,8 @@ func (r *SPReconciler[T, PC]) delete(ctx context.Context, obj T, providerConfig 
 		return res, nil
 	}
 	// remove mcp access
-	res, err = r.ClusterAccessReconciler.ReconcileDelete(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(obj)})
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(obj)}
+	res, err = r.ClusterAccessReconciler.ReconcileDelete(ctx, req)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -146,15 +145,17 @@ func (r *SPReconciler[T, PC]) delete(ctx context.Context, obj T, providerConfig 
 	}
 	// remove finalizer
 	controllerutil.RemoveFinalizer(obj, obj.Finalizer())
-	if err := r.Update(ctx, obj); err != nil {
+	if err := r.OnboardingCluster.Client().Update(ctx, obj); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
 }
-func (r *SPReconciler[T, PC]) createOrUpdate(ctx context.Context, obj T, provicerConfig PC, mcp *clusters.Cluster) (ctrl.Result, error) {
+func (r *SPReconciler[T, PC]) createOrUpdate(
+	ctx context.Context, obj T, pc PC, mcp *clusters.Cluster,
+) (ctrl.Result, error) {
 	controllerutil.AddFinalizer(obj, obj.Finalizer())
-	if err := r.Update(ctx, obj); err != nil {
+	if err := r.OnboardingCluster.Client().Update(ctx, obj); err != nil {
 		return ctrl.Result{}, err
 	}
-	return r.DomainServiceReconciler.CreateOrUpdate(ctx, obj, provicerConfig, mcp)
+	return r.DomainServiceReconciler.CreateOrUpdate(ctx, obj, pc, mcp)
 }

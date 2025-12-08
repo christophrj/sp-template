@@ -24,7 +24,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -42,11 +41,9 @@ import (
 
 // FooServiceReconciler reconciles a FooService object
 type FooServiceReconciler struct {
+	OnboardingCluster       *clusters.Cluster
 	PlatformCluster         *clusters.Cluster
 	ClusterAccessReconciler clusteraccess.Reconciler
-	// onboarding client
-	client.Client
-	Scheme *runtime.Scheme
 }
 
 func (r *FooServiceReconciler) CreateOrUpdate(ctx context.Context, svcobj *apiv1alpha1.FooService, providerConfig *apiv1alpha1.ProviderConfig, target *clusters.Cluster) (ctrl.Result, error) {
@@ -101,10 +98,9 @@ func (r *FooServiceReconciler) Delete(ctx context.Context, obj *apiv1alpha1.FooS
 // SetupWithManager sets up the controller with the Manager.
 func (r *FooServiceReconciler) SetupWithManager(mgr ctrl.Manager, providerConfigUpdates chan event.GenericEvent) error {
 	spReconciler := spruntime.SPReconciler[*apiv1alpha1.FooService, *apiv1alpha1.ProviderConfig]{
+		OnboardingCluster:       r.OnboardingCluster,
 		PlatformCluster:         r.PlatformCluster,
 		ClusterAccessReconciler: r.ClusterAccessReconciler,
-		Client:                  r.Client,
-		Scheme:                  r.Scheme,
 		DomainServiceReconciler: r,
 		EmptyAPIObj: func() *apiv1alpha1.FooService {
 			return &apiv1alpha1.FooService{}
@@ -120,7 +116,7 @@ func (r *FooServiceReconciler) SetupWithManager(mgr ctrl.Manager, providerConfig
 						spReconciler.ConfigCache.Store(obj)
 						// reconcile all existing objects
 						var list apiv1alpha1.FooServiceList
-						if err := r.Client.List(ctx, &list); err != nil {
+						if err := r.OnboardingCluster.Client().List(ctx, &list); err != nil {
 							return nil
 						}
 						reqs := make([]reconcile.Request, len(list.Items))
