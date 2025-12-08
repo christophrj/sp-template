@@ -24,7 +24,6 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -118,11 +117,7 @@ func (r *FooServiceReconciler) SetupWithManager(mgr ctrl.Manager, providerConfig
 				providerConfigUpdates,
 				handler.EnqueueRequestsFromMapFunc(
 					func(ctx context.Context, obj client.Object) []reconcile.Request {
-						pc, err := toProviderConfig(obj.(*unstructured.Unstructured))
-						if err != nil {
-							return nil
-						}
-						spReconciler.ConfigCache.Store(pc)
+						spReconciler.ConfigCache.Store(obj)
 						// reconcile all existing objects
 						var list apiv1alpha1.FooServiceList
 						if err := r.Client.List(ctx, &list); err != nil {
@@ -140,15 +135,6 @@ func (r *FooServiceReconciler) SetupWithManager(mgr ctrl.Manager, providerConfig
 		).
 		Named("fooservice").
 		Complete(&spReconciler)
-}
-
-func toProviderConfig(u *unstructured.Unstructured) (*apiv1alpha1.ProviderConfig, error) {
-	pc := &apiv1alpha1.ProviderConfig{}
-	err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, pc)
-	if err != nil {
-		return nil, err
-	}
-	return pc, nil
 }
 
 func fooDomainAPI() *apiextensionsv1.CustomResourceDefinition {
