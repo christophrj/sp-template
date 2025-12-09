@@ -16,38 +16,54 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+// DomainServiceReconciler implements any business logic required to manage your APIObject
 type DomainServiceReconciler[T APIObject, PC ProviderConfig] interface {
+	// CreateOrUpdate is called on every add or update event
 	CreateOrUpdate(ctx context.Context, obj T, pc PC, target *clusters.Cluster) (ctrl.Result, error)
+	// Delete is called on every delete event
 	Delete(ctx context.Context, obj T, pc PC, target *clusters.Cluster) (ctrl.Result, error)
 }
 
+// APIObject represents an onboarding api type
 type APIObject interface {
 	client.Object
 	APIObjectStatus
 	Finalizer() string
 }
 
+// APIObjectStatus represents the status type of an onboarding api type
 type APIObjectStatus interface {
+	// GetStatus returns the status object
 	GetStatus() any
+	// GetConditions returns the status object
 	GetConditions() *[]metav1.Condition
+	// SetPhase sets Status.Phase
 	SetPhase(string)
+	// SetObservedGeneration sets Status.ObservedGeneration
 	SetObservedGeneration(int64)
 }
 
+// ProviderConfig represents the config for platform operators
+// The ProviderConfig is passed to the DomainServiceReconcile to reconcile APIObjects
 type ProviderConfig interface {
 	client.Object
+	// PollIntveral can be used to periodically requeue, preventing managed objects
+	// from drifting on the target cluster.  Return 0 if not required.
 	PollInterval() time.Duration
 }
 
+// SPReconciler implements a generic reconcile loop to separate platform
+// and service provider developer space.
 type SPReconciler[T APIObject, PC ProviderConfig] struct {
 	PlatformCluster         *clusters.Cluster
 	OnboardingCluster       *clusters.Cluster
 	ClusterAccessReconciler clusteraccess.Reconciler
 	DomainServiceReconciler DomainServiceReconciler[T, PC]
 	EmptyAPIObj             func() T
-	ConfigCache             atomic.Value
+	ProviderConfig          atomic.Pointer[PC]
 }
 
+// Reconcile orchestrates platform and DomainServiceReconciler logic to reconcile APIObjects
 func (r *SPReconciler[T, PC]) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	l := logf.FromContext(ctx)
 	// common reconciler logic including get obj, providerconfig, mcp/workload access
@@ -56,13 +72,13 @@ func (r *SPReconciler[T, PC]) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	oldObj := obj.DeepCopyObject().(T)
-	providerConfig := r.ConfigCache.Load()
+	providerConfig := r.ProviderConfig.Load()
 	if providerConfig == nil {
 		StatusProgressing(obj, "ReconcileError", "No ProviderConfig found")
 		r.updateStatus(ctx, obj, oldObj)
 		return ctrl.Result{}, errors.New("provider config missing")
 	}
-	providerConfigCopy := providerConfig.(PC).DeepCopyObject().(PC)
+	providerConfigCopy := (*providerConfig).DeepCopyObject().(PC)
 	// TODO workload cluster access
 	mcp, res, err := r.mcp(ctx, req)
 	if err != nil {

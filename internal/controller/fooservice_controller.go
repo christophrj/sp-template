@@ -46,44 +46,46 @@ type FooServiceReconciler struct {
 	ClusterAccessReconciler clusteraccess.Reconciler
 }
 
+// CreateOrUpdate is called on every add or update event
 func (r *FooServiceReconciler) CreateOrUpdate(ctx context.Context, svcobj *apiv1alpha1.FooService, providerConfig *apiv1alpha1.ProviderConfig, target *clusters.Cluster) (ctrl.Result, error) {
-	spruntime.StatusProgressing(svcobj, "Reconcile", "Reconcile in progress")
+	spruntime.StatusProgressing(svcobj, "Reconciling", "Reconcile in progress")
 	l := logf.FromContext(ctx)
-	managedObj := fooDomainAPI()
+	managedObj := fooCRD()
 	cl := apiextensionclient.NewForConfigOrDie(target.Cluster().GetConfig()).ApiextensionsV1()
 	existing, err := cl.CustomResourceDefinitions().Get(ctx, managedObj.Name, metav1.GetOptions{})
 	if errors.IsNotFound(err) {
 		// create
 		_, err := cl.CustomResourceDefinitions().Create(ctx, managedObj, metav1.CreateOptions{})
 		if err != nil {
-			l.Error(err, "create failed")
+			l.Error(err, "create object failed")
 			return ctrl.Result{}, err
 		}
 		spruntime.StatusReady(svcobj)
 		return ctrl.Result{}, nil
 	}
 	if err != nil {
-		l.Error(err, "get failed")
+		l.Error(err, "get object failed")
 		return ctrl.Result{}, err
 	}
 	// update
 	managedObj.ResourceVersion = existing.ResourceVersion // required for update
 	_, err = cl.CustomResourceDefinitions().Update(ctx, managedObj, metav1.UpdateOptions{})
 	if err != nil {
-		l.Error(err, "update failed")
+		l.Error(err, "update object failed")
 		return ctrl.Result{}, err
 	}
 	spruntime.StatusReady(svcobj)
 	return ctrl.Result{}, nil
 }
 
+// Delete is called on every delete event
 func (r *FooServiceReconciler) Delete(ctx context.Context, obj *apiv1alpha1.FooService, providerConfig *apiv1alpha1.ProviderConfig, target *clusters.Cluster) (ctrl.Result, error) {
 	l := logf.FromContext(ctx)
 	// remove managed objs
 	spruntime.StatusTerminating(obj)
-	managedObj := fooDomainAPI()
+	managedObj := fooCRD()
 	if err := target.Client().Delete(ctx, managedObj); client.IgnoreNotFound(err) != nil {
-		l.Error(err, "delete failed")
+		l.Error(err, "delete object failed")
 		return ctrl.Result{}, err
 	}
 	if err := target.Client().Get(ctx, client.ObjectKeyFromObject(managedObj), managedObj); err != nil {
@@ -95,45 +97,7 @@ func (r *FooServiceReconciler) Delete(ctx context.Context, obj *apiv1alpha1.FooS
 	}, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
-func (r *FooServiceReconciler) SetupWithManager(mgr ctrl.Manager, providerConfigUpdates chan event.GenericEvent) error {
-	spReconciler := spruntime.SPReconciler[*apiv1alpha1.FooService, *apiv1alpha1.ProviderConfig]{
-		OnboardingCluster:       r.OnboardingCluster,
-		PlatformCluster:         r.PlatformCluster,
-		ClusterAccessReconciler: r.ClusterAccessReconciler,
-		DomainServiceReconciler: r,
-		EmptyAPIObj: func() *apiv1alpha1.FooService {
-			return &apiv1alpha1.FooService{}
-		},
-	}
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&apiv1alpha1.FooService{}).
-		WatchesRawSource(
-			source.Channel(
-				providerConfigUpdates,
-				handler.EnqueueRequestsFromMapFunc(
-					func(ctx context.Context, obj client.Object) []reconcile.Request {
-						spReconciler.ConfigCache.Store(obj)
-						// reconcile all existing objects
-						var list apiv1alpha1.FooServiceList
-						if err := r.OnboardingCluster.Client().List(ctx, &list); err != nil {
-							return nil
-						}
-						reqs := make([]reconcile.Request, len(list.Items))
-						for i := range list.Items {
-							reqs[i] = reconcile.Request{
-								NamespacedName: client.ObjectKeyFromObject(&list.Items[i]),
-							}
-						}
-						return reqs
-					},
-				)),
-		).
-		Named("fooservice").
-		Complete(&spReconciler)
-}
-
-func fooDomainAPI() *apiextensionsv1.CustomResourceDefinition {
+func fooCRD() *apiextensionsv1.CustomResourceDefinition {
 	return &apiextensionsv1.CustomResourceDefinition{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "foos.example.domain",
@@ -169,4 +133,49 @@ func fooDomainAPI() *apiextensionsv1.CustomResourceDefinition {
 			},
 		},
 	}
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *FooServiceReconciler) SetupWithManager(mgr ctrl.Manager, providerConfigUpdates chan event.GenericEvent) error {
+	spReconciler := spruntime.SPReconciler[*apiv1alpha1.FooService, *apiv1alpha1.ProviderConfig]{
+		OnboardingCluster:       r.OnboardingCluster,
+		PlatformCluster:         r.PlatformCluster,
+		ClusterAccessReconciler: r.ClusterAccessReconciler,
+		DomainServiceReconciler: r,
+		EmptyAPIObj: func() *apiv1alpha1.FooService {
+			return &apiv1alpha1.FooService{}
+		},
+	}
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&apiv1alpha1.FooService{}).
+		// sets up reconciles whenever provider config controller sends update events
+		WatchesRawSource(
+			source.Channel(
+				providerConfigUpdates,
+				handler.EnqueueRequestsFromMapFunc(
+					func(ctx context.Context, obj client.Object) []reconcile.Request {
+						// update cached provider config
+						if obj != nil {
+							copy := obj.(*apiv1alpha1.ProviderConfig).DeepCopy()
+							spReconciler.ProviderConfig.Store(&copy)
+						} else {
+							spReconciler.ProviderConfig.Store(nil)
+						}
+						// reconcile all existing objects
+						var list apiv1alpha1.FooServiceList
+						if err := r.OnboardingCluster.Client().List(ctx, &list); err != nil {
+							return nil
+						}
+						reqs := make([]reconcile.Request, len(list.Items))
+						for i := range list.Items {
+							reqs[i] = reconcile.Request{
+								NamespacedName: client.ObjectKeyFromObject(&list.Items[i]),
+							}
+						}
+						return reqs
+					},
+				)),
+		).
+		Named("fooservice").
+		Complete(&spReconciler)
 }

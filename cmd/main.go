@@ -273,7 +273,7 @@ func main() {
 		setupLog.Error(err, "unable to add platform cluster to manager")
 		os.Exit(1)
 	}
-	configUpdates := make(chan event.GenericEvent)
+	providerConfigUpdates := make(chan event.GenericEvent)
 	if err := (&controller.FooServiceReconciler{
 		OnboardingCluster: onboardingCluster,
 		PlatformCluster:   platformCluster,
@@ -286,14 +286,14 @@ func main() {
 				Kind: "ClusterRole",
 			},
 		}).SkipWorkloadCluster(),
-	}).SetupWithManager(mgr, configUpdates); err != nil {
+	}).SetupWithManager(mgr, providerConfigUpdates); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FooService")
 		os.Exit(1)
 	}
 	if err := (&controller.ProviderConfigReconciler{
-		PlatformCluster:   platformCluster,
-		OnboardingCluster: onboardingCluster,
-		UpdateChannel:     configUpdates,
+		PlatformCluster:       platformCluster,
+		OnboardingCluster:     onboardingCluster,
+		ProviderUpdateChannel: providerConfigUpdates,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ProviderConfig")
 		os.Exit(1)

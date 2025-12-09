@@ -10,10 +10,8 @@ const (
 	// StatusPhaseReady indicates that the resource is ready. All conditions are met and are in status "True".
 	StatusPhaseReady = "Ready"
 	// StatusPhaseProgressing indicates that the resource is not ready and being created or updated.
-	// At least one condition is not met and is in status "False".
 	StatusPhaseProgressing = "Progressing"
 	// StatusPhaseTerminating indicates that the resource is not ready and in deletion.
-	// At least one condition is not met and is in status "False".
 	StatusPhaseTerminating = "Terminating"
 )
 
@@ -36,7 +34,7 @@ func StatusReady(obj APIObject) {
 		Type:               ServiceProviderConditionReady,
 		Status:             metav1.ConditionTrue,
 		ObservedGeneration: obj.GetGeneration(),
-		Reason:             "ServiceReady",
+		Reason:             "ReconcileSuccess",
 		Message:            "Domain Service is ready",
 	})
 	obj.SetObservedGeneration(obj.GetGeneration())

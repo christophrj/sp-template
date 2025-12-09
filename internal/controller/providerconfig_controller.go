@@ -32,9 +32,9 @@ import (
 
 // ProviderConfigReconciler reconciles a ProviderConfig object
 type ProviderConfigReconciler struct {
-	PlatformCluster   *clusters.Cluster
-	OnboardingCluster *clusters.Cluster
-	UpdateChannel     chan event.GenericEvent
+	PlatformCluster       *clusters.Cluster
+	OnboardingCluster     *clusters.Cluster
+	ProviderUpdateChannel chan event.GenericEvent
 }
 
 // +kubebuilder:rbac:groups=foos.services.openmcp.cloud,resources=providerconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -52,16 +52,17 @@ type ProviderConfigReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.21.0/pkg/reconcile
 func (r *ProviderConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var obj v1alpha1.ProviderConfig
+	notify := event.GenericEvent{}
 	if err := r.PlatformCluster.Client().Get(ctx, req.NamespacedName, &obj); err != nil {
+		r.ProviderUpdateChannel <- notify
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	evt := event.GenericEvent{
-		Object: obj.DeepCopy(),
-	}
 	if !obj.GetDeletionTimestamp().IsZero() {
-		evt.Object = nil
+		r.ProviderUpdateChannel <- notify
+		return ctrl.Result{}, nil
 	}
-	r.UpdateChannel <- evt
+	notify.Object = obj.DeepCopy()
+	r.ProviderUpdateChannel <- notify
 	return ctrl.Result{}, nil
 }
 

@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -33,16 +34,17 @@ func TestServiceProvider(t *testing.T) {
 					t.Error(err)
 					return ctx
 				}
-				fooServices, err := resources.CreateObjectsFromDir(ctx, onboardingConfig, "onboarding")
+				objList, err := resources.CreateObjectsFromDir(ctx, onboardingConfig, "onboarding")
 				if err != nil {
 					t.Errorf("failed to create onboarding cluster objects: %v", err)
 					return ctx
 				}
-				for _, obj := range fooServices.Items {
+				for _, obj := range objList.Items {
 					if err := wait.For(conditions.Match(&obj, onboardingConfig, "Ready", corev1.ConditionTrue)); err != nil {
 						t.Error(err)
 					}
 				}
+				objList.DeepCopyInto(&fooServices)
 				return ctx
 			},
 		).
@@ -54,12 +56,12 @@ func TestServiceProvider(t *testing.T) {
 				return ctx
 			}
 			for _, obj := range fooServices.Items {
-				if err := resources.DeleteObject(ctx, onboardingConfig, &obj); err != nil {
+				if err := resources.DeleteObject(ctx, onboardingConfig, &obj, wait.WithTimeout(time.Minute)); err != nil {
 					t.Errorf("failed to delete fooservice onboarding object: %v", err)
 				}
 			}
 			return ctx
 		}).
-		Teardown(providers.DeleteMCP("test-mcp"))
+		Teardown(providers.DeleteMCP("test-mcp", wait.WithTimeout(2*time.Minute)))
 	testenv.Test(t, basicProviderTest.Feature())
 }
